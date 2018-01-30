@@ -1,0 +1,272 @@
+---
+title             : "The title"
+shorttitle        : "Title"
+
+author: 
+  - name          : "Caspar J. van Lissa"
+    affiliation   : "1,2"
+    corresponding : yes    # Define only one corresponding author
+    address       : "Postal address"
+    email         : "c.j.vanlissa@uu.nl"
+
+affiliation:
+  - id            : "1"
+    institution   : "Utrecht University, NL"
+  - id            : "2"
+    institution   : "Erasmus University Rotterdam, NL"
+
+author_note: |
+
+abstract: |
+
+keywords          : ""
+wordcount         : ""
+
+bibliography      : ["r-references.bib"]
+
+figsintext        : no
+figurelist        : no
+tablelist         : no
+footnotelist      : no
+lineno            : yes
+mask              : no
+
+class             : "man"
+output            : papaja::apa6_word
+---
+
+```{r load_packages, include = FALSE}
+library("papaja")
+library(ggplot2)
+library(metafor)
+library(metaforest)
+reportp <- function(p, dec = 2){
+  compnum <- as.numeric(paste(c(".", rep("0", dec-1), "1"), collapse = ""))
+  ifelse(p < compnum, paste("<", compnum), formatC(p, digits = dec, format = "f"))
+}
+```
+
+```{r analysis_preferences}
+knitr::opts_chunk$set(echo = FALSE)
+set.seed(77)
+setwd("C:/Users/Caspar/Dropbox/meta-analysis-kindness/Analysis-caspar")
+```
+
+```{r load_data, echo=FALSE, warning=FALSE, message=FALSE}
+#load csv
+data <- read.csv("curry.kindness.ma.final4.csv", header = TRUE, sep = ",", na.strings = "na", stringsAsFactors = FALSE, skip = 2)
+#names to lower case
+names(data) <- tolower(names(data))
+#Remove table note (if exists)
+data <- data[-grep("^Note", data$study), ]
+#Remove periods from names
+names(data) <- gsub("\\.", "", names(data))
+#correct typo
+data$x <- gsub("Study(\\d)", "Study \\1", data$x)
+#create unique study id numbers from study name and sample name
+data$study_id <- factor(paste(data$study, data$x, sep = " "))
+# Number effect size (number sequentially and restart sequence when change in the study_id is detected)
+data$effect_id <- 1:nrow(data)
+#Recode missing effect sizes as 0 (these were reported as non-significant in the paper)
+data$d[is.na(data$d)]<- 0
+#Calculate Cohen's d variance
+data$vi <- ((data$n1i+data$n2c)/(data$n1i*data$n2c))+(data$d^2/(2*(data$n1i+data$n2c)))
+
+#Clean moderators
+data$sex[is.na(data$sex)] <- median(data$sex, na.rm = TRUE)
+
+data$age[grep("^college", data$age)] <- 20
+data$age <- as.numeric(gsub("~", "", data$age))
+data$age[is.na(data$age)] <- median(data$age, na.rm = TRUE)
+moderators <- c("sex", "age", "donorcode", "interventioncode", "controlcode", "outcomecode")
+
+data$donorcode[data$donorcode==0] <- "Typical"
+data$donorcode[data$donorcode==1] <- "Anxious"
+data$interventioncode[data$interventioncode==1] <- "Acts of Kindness"
+data$interventioncode[data$interventioncode==2] <- "Prosocial Spending"
+data$interventioncode[data$interventioncode==3] <- "Other"
+data$controlcode[data$controlcode==1] <- "Nothing"
+data$controlcode[data$controlcode==2] <- "Neutral Activity"
+data$controlcode[data$controlcode==3] <- "Self Help"
+data$controlcode[data$controlcode==4] <- "Other"
+data$outcomecode[data$outcomecode==1] <- "Happiness"
+data$outcomecode[data$outcomecode==2] <- "Life Satisfaction"
+data$outcomecode[data$outcomecode==3] <- "PN Affect"
+data$outcomecode[data$outcomecode==4] <- "Other"
+data[c("donorcode", "interventioncode", "controlcode", "outcomecode")] <- lapply(data[c("donorcode", "interventioncode", "controlcode", "outcomecode")], as.factor)
+```
+```{r metaforest, echo=FALSE, warning=FALSE, message=FALSE}
+if(!any(list.files() == "mf_results.RData")){
+  mfdat <- data[c("study_id", "d", "vi", moderators)]
+  
+  replications <- 100
+  
+  set.seed(3470)
+  #Save seeds
+  seeds <- round(runif(replications, 0, 10000000))
+  while(length(unique(seeds)) < replications) {
+    addseeds <- replications - length(unique(seeds))
+    seeds <- c(unique(seeds), round(runif(addseeds, 0, 10000000)))
+  }
+  
+  master_list <- lapply(seeds, function(rep){
+    set.seed(rep)
+    ClusterMF(as.formula(paste0("d ~ ", paste(moderators, collapse = " + "))), data = mfdat, vi = "vi", study = "study_id", whichweights = "random", num.trees = 10000)
+  })
+  
+  var_selected <- sapply(moderators, function(this_mod){
+    sum(sapply(master_list, function(x){
+      this_mod %in% names(x$forest$variable.importance)
+    }))
+  })
+  
+  r_squareds <- sapply(master_list, function(x){x$forest$r.squared})
+  varimps <- lapply(master_list, function(x){x$forest$variable.importance})
+  mf_results <- list(var_selected = var_selected, r_squared = r_squareds, importance = varimps)
+  saveRDS(mf_results, "C:/Users/Caspar/Dropbox/meta-analysis-kindness/Analysis-caspar/mf_results.RData")
+  rm(master_list)
+} else {
+  mf_results <- readRDS("C:/Users/Caspar/Dropbox/meta-analysis-kindness/Analysis-caspar/mf_results.RData")
+}
+
+```
+
+```{r prepare_meta, echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+#Count N's:
+# totaln <- sum(as.numeric(names(table(data$n1i))) * sapply(names(table(data$n1i)), function(x){
+#   length(unique(data[data$n1i==x, ]$study_id))
+#   })) + sum(as.numeric(names(table(data$n2c))) * sapply(names(table(data$n2c)), function(x){
+#   length(unique(data[data$n2c==x, ]$study_id))
+#   }))
+#Conduct meta-analyses
+model.mods <- rma.mv(d, vi, mods = data$donor_D, random = list(~ 1 | study_id, ~ 1 | effect_id), data=data) 
+model.full <- rma.mv(d, vi, random = list(~ 1 | study_id, ~ 1 | effect_id), data=data) 
+model.within_null <- rma.mv(d, vi, random = list(~ 1 | study_id, ~ 1 | effect_id), sigma2=c(NA,0), data=data) 
+model.between_null <- rma.mv(d, vi, random = list(~ 1 | study_id, ~ 1 | effect_id), sigma2=c(0,NA), data=data) 
+model.both_null <- rma.mv(d, vi, random = list(~ 1 | study_id, ~ 1 | effect_id), sigma2=c(0,0), data=data) 
+#model.mods <- rma.mv(d, vi, mods = as.formula(paste0("~ ", paste(moderators, collapse = " + "))), random = list(~ 1 | study_id, ~ 1 | effect_id), data=data) 
+#ggplot(data, aes(x=d, colour=interventioncode))+geom_density()
+#anova(model.full,rma.mv(d, vi, mods = ~interventioncode, random = list(~ 1 | study_id, ~ 1 | effect_id), data=data) ) 
+aov_within <- anova(model.full,model.within_null) 
+aov_between <- anova(model.full,model.between_null) 
+aov_bothnull <- anova(model.full,model.both_null) 
+aov_table <- rbind(
+c(df=aov_between$p.f, aov_between$fit.stats.f[c(3:4, 1)], LRT = NA, p = NA),
+c(df=aov_within$p.r, aov_within$fit.stats.r[c(3:4, 1)], LRT = aov_within$LRT, p = aov_within$pval),
+c(df=aov_between$p.r, aov_between$fit.stats.r[c(3:4, 1)], LRT = aov_between$LRT, p = aov_between$pval),
+c(df=aov_bothnull$p.r, aov_bothnull$fit.stats.r[c(3:4, 1)], LRT = aov_bothnull$LRT, p = aov_bothnull$pval)
+)
+rownames(aov_table) <- c("Three-level model", "Within-studies variance constrained", "Between-studies variance constrained", "Both variance components constrained")
+aov_table[,-c(1,6)] <- formatC(aov_table[,-c(1,6)], digits = 2, format = "f")
+aov_table[,6] <- formatC(as.numeric(aov_table[,6]), digits = 3, format = "f")
+aov_table[1, 5:6] <-""
+write.csv(aov_table, "table_x.csv")
+confints <- confint(model.full)
+#CHeck convergence of variance components:
+#par(mfrow=c(2,1))
+#plot.profile1 <- profile(model.full, sigma2=1)
+#plot.profile2 <- profile(model.full, sigma2=2)
+
+#Write forest plot to file
+png(file="forest_plot.png",width=210,height=297, units="mm", res = 300)
+forest(model.full, xlim = c(-5.5,4), alim = c(-1, 2), xlab="Effect size (Cohen's d)", mlab="Overall estimate: ", slab = data$study, ilab=data$outcomedv,
+       ilab.xpos=c(-2), ilab.pos = c(4), cex = 0.75)
+par(cex=0.75, font=2)
+text(c(-5.5, -2.01, 2.54), 58, c("Study", "Outcome", "Cohen's d"), pos = 4)
+dev.off()
+
+library(extrafont)
+loadfonts()
+cairo_pdf("forest_plot.pdf", family="Helvetica", width = 8.27,height = 11.69)
+forest(model.full, xlim = c(-5.5,4), alim = c(-1, 2), xlab="Effect size (Cohen's d)", mlab="Overall estimate: ", slab = data$study, ilab=data$outcomedv, ilab.xpos=c(-2), ilab.pos = c(4,4,4), cex = 0.75)
+par(cex=0.75, font=2)
+text(c(-5.5, -2.01, 2.54), 58, c("Study", "Outcome", "Cohen's d"), pos = c(4,4,4))
+dev.off()
+embed_fonts("forest_plot.pdf", outfile="forest_plot.pdf")
+
+num_effect_sizes <- table(table(data$study))
+
+```
+
+
+## Descriptive statistics
+
+The effect size estimates ranged from `r formatC(min(data[["d"]]), digits = 2, format = "f")` to `r formatC(max(data[["d"]]), digits = 2, format = "f")` ($M = `r reportp(mean(data[["d"]]))`, SD = `r reportp(sd(data[["d"]]))`$). Sample sizes ranged from `r min(rowSums(data[, c("n1i", "n2c")]))` to `r max(rowSums(data[, c("n1i", "n2c")]))` participants ($M = `r formatC(mean(rowSums(data[, c("n1i", "n2c")])), digits = 2, format = "f")`, SD = `r formatC(sd(rowSums(data[, c("n1i", "n2c")])), digits = 2, format = "f")`$). Several studies reported multiple effect sizes (`r min(names(num_effect_sizes)) ` - `r max(names(num_effect_sizes))`, with most reporting one or two effect sizes).
+
+## Meta-analysis 
+
+Meta-analysis was conducted in in R [@r_core_team_r:_2017-1] and the R-packages metafor [@viechtbauer_conducting_2010-1], and metaforest [@van_lissa_metaforest:_2017-1], following the recommendations summarised in (Field & Gillett, 2010). We used three-level meta-analysis to account for dependent effect sizes within studies [@van_den_noortgate_meta-analysis_2015]. Let $y_{jk}$ denote the $j$ observed effect sizes $y$, originating from $k$ studies. The multi-level model is then given by the following equations: 
+<!--
+\begin{center}
+$\begin{equation}
+\left.
+\begin{aligned}
+y_i &= \theta_i + \epsilon_i &\text{where } \epsilon_i &\sim N(0, \sigma^2_i)\\
+\theta_i &= \mu + \zeta_i &\text{where } \zeta_i &\sim N(0, \tau^2)
+\end{aligned}
+\right\}
+\end{equation}$
+\end{center}
+-->
+
+$$
+      \left.
+      \begin{aligned}
+        y_{jk} &= \beta_{jk} + \epsilon_{jk} &\text{where } \epsilon_{jk} &\sim N(0, \sigma^2_{\epsilon_{jk}})\\
+        \beta_{jk} &= \theta_k + w_{jk} &\text{where } w_{jk} &\sim N(0, \sigma^2_{w})\\
+        \theta_{k} &= \delta + b_{k} &\text{where } b_k &\sim N(0, \sigma^2_{b})
+      \end{aligned}
+      \right\}
+$$
+The first equation indicates that observed effect sizes are equal to the underlying population effect size, plus sampling error $\epsilon_{jk}$. The second equation indicates that population effect sizes within studies are a function of a study-specific true effect size, plus within-study residuals $w_{jk}$. The third equation indicates that the distribution of study-specific true effect sizes are distributed around an overall mean effect, with between-study residuals $b_k$. 
+Results revealed that the overall effect size estimate was $\delta = `r formatC(model.full[["b"]], digits = 2, format = "f")`$, 95% CI [`r formatC(model.full[["ci.lb"]], digits = 2, format = "f")`, `r formatC(model.full[["ci.ub"]], digits = 2, format = "f")`], $Z = `r formatC(model.full[["zval"]], digits = 2, format = "f")`$, $p < .001$ (see Figure 2). *This is a small-to-medium effect, approximately equivalent to an increase of 0.8 on a standard 0-10 happiness scale (Helliwell, Layard, & Sachs, 2016). *
+The within-studies variance component $\sigma^2_w$ was negligible, `r formatC(model.full[["sigma2"]][2], digits = 2, format = "f")`, 95% CI [`r reportp(confints[[2]][["random"]][1,2])`, `r reportp(confints[[2]][["random"]][1,3])`]. The between-studies variance $\sigma^2_b$, on the other hand, differed significantly from zero, `r reportp(model.full[["sigma2"]][1])`, 95% CI [`r reportp(confints[[1]][["random"]][1,2])`, `r reportp(confints[[1]][["random"]][1,3])`]. The fact that the between-studies component was larger than the within-studies component indicates that the variation in effect sizes was primarily accounted for by differences between studies, whereas differences between effect sizes within the same studies were negligible. Likelihood ratio tests also indicated that constraining the within-studies variance to zero would not worsen model fit, whereas constraining either the between-studies variance or both variance components to zero did lead to significant deteriorations in model fit (see Table X). This again indicates that there was substantial heterogeneity between average effect sizes across studies, but not between effect sizes published within the same studies.
+
+```{r results="asis"}
+apa_table(
+aov_table, caption = "Model fit and likelihood ratio tests", note = "Significance of variance components is assessed by constraining them to zero, and examining the significance of a log-likelihood (ll) ratio test (LRT) comparing the constrained model to the full three-level model. ", placement = "p"
+)
+failsafe <- fsn(d, vi, data = data)
+```
+
+*A chi-square test of homogeneity of effect sizes was not significant, 2(19) 21.53, p=.37. These measures suggest considerable similarity in effect sizes across studies.*
+*Consistent with this finding, moderator analysis suggested that the effect of age or sex on the overall effect size was not significant.*
+
+```{r funnel_plot, echo=FALSE, warning=FALSE, message=FALSE, results="hide"}
+png(file="funnel_plot.png",width=148, height=105, units="mm", res = 300)
+funnel(model.full, main=NULL, 
+       back="white", shade="white", hlines="white", xlab = "Effect size (Cohen's d)")
+dev.off()
+cairo_pdf("funnel_plot.pdf", family="Helvetica", width = 5.8, height = 4.1)
+  funnel.rma(model.full, main=NULL, 
+       back="white", shade="white", hlines="white", xlab = "Effect size (Cohen's d)", digits = 2)
+dev.off()
+embed_fonts("funnel_plot.pdf", outfile="funnel_plot.pdf")
+beggstest <- regtest(data$d, data$vi)
+sd(data$age)
+```
+File drawer analysis [@rosenthal_file_1979] revealed that `r failsafe[["fsnum"]]` unpublished, filed, or unretrieved studies averaging null results would be required to bring the average unweighted effect size to nonsignificance. Visual inspection of the Funnel plot (Figure 3) did not clearly indicate asymmetry, which could be a sign of publication bias. Begg's test of funnel asymmetry (based on random-effects meta-analysis) similarly did not indicate significant bias, $Z = `r formatC(beggstest[["zval"]], digits = 2, format = "f")`$, $p = `r formatC(beggstest[["pval"]], digits = 2, format = "f")`$.
+
+## Moderation
+
+We coded several potential theoretical and methodological moderators: Proportion of male participants, average age of the sample, type of population (typical or socially anxious), type of intervention, type of control condition, and outcome measure. However, the small sample size limits our ability to include these moderators in mixed-effects meta-analysis without risking overfitting (modeling random noise in the data, rather than true moderating effects). We therefore used metaforest [ @van_lissa_metaforest:_2017] to screen for relevant moderators. This technique uses the machine learning algorithm "random forests" to prevent overfitting, and to assess the importance of several potential moderators. An added benefit is that metaforest can capture non-linear relationships between moderators and effect size, and higher-order interactions. To this end, many (in this case, 10000) bootstrap samples are drawn from the original data, and a models is estimated on each bootstrap sample. Then, each model's performance is evaluated on cases not part of its bootstrap sample, yielding an estimate of explained variance in new data, $R^2_{oob}$. 
+We conducted random-effects weighted metaforest, with clustered bootstrapping to account for the multilevel structure of the data ($n_{\text{tree}} = 10000, m_{\text{try}} = 2$). We replicated the analysis 100 times to ensure the reliability of findings. The median estimated explained variance in out-of-bootstrap cases was negative ($R^2_{oob} = `r formatC(median(mf_results[[2]]), digits = 2, format = "f")`$), with a large standard deviation across replications ($SD = `r formatC(sd(mf_results[[2]]), digits = 2, format = "f")`$). When $R^2_{oob}$ is negative, this means that the average effect size is a better predictor of out-of-bootstrap cases than the model-implied predictions. In other words, the model did not capture generalizable relationships between the moderators and effect size, and we did not find evidence for associations between the moderators and effect size.
+\newpage
+
+![](forest_plot.png)
+
+\newpage
+
+![](funnel_plot.png)
+
+\newpage
+![](forest_plot.svg)
+
+
+# References
+```{r create_r-references}
+r_refs(file = "r-references.bib")
+```
+
+\setlength{\parindent}{-0.5in}
+\setlength{\leftskip}{0.5in}
