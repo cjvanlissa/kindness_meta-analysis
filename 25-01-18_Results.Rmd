@@ -49,12 +49,11 @@ reportp <- function(p, dec = 2){
 ```{r analysis_preferences}
 knitr::opts_chunk$set(echo = FALSE)
 set.seed(77)
-setwd("C:/Users/Caspar/Dropbox/meta-analysis-kindness/Analysis-caspar")
 ```
 
 ```{r load_data, echo=FALSE, warning=FALSE, message=FALSE}
 #load csv
-data <- read.csv("curry.kindness.ma.final4.csv", header = TRUE, sep = ",", na.strings = "na", stringsAsFactors = FALSE, skip = 2)
+data <- read.csv("curry.kindness.ma.data.csv", header = TRUE, sep = ",", na.strings = "na", stringsAsFactors = FALSE, skip = 2)
 #names to lower case
 names(data) <- tolower(names(data))
 #Remove table note (if exists)
